@@ -10,18 +10,31 @@ from sklearn.compose import TransformedTargetRegressor
 from sklearn.metrics import mean_absolute_error
 
 from sklearn.ensemble import RandomForestRegressor, StackingRegressor
-from catboost import CatBoostRegressor
-from xgboost import XGBRegressor
 from sklearn.linear_model import Ridge
 
 from src.features import CraigslistFeatureEngineer
+
+try:
+    from xgboost import XGBRegressor
+    XGB_AVAILABLE = True
+except ImportError:
+    XGB_AVAILABLE = False
+
+try:
+    from catboost import CatBoostRegressor
+    CATBOOST_AVAILABLE = True
+except ImportError:
+    CATBOOST_AVAILABLE = False
+
 
 def categorical_without_description(X_df: pd.DataFrame) -> list[str]:
     cat_cols = X_df.select_dtypes(include=["object", "category"]).columns.tolist()
     return [col for col in cat_cols if col != "description"]
 
+
 def numeric_columns(X_df: pd.DataFrame) -> list[str]:
     return X_df.select_dtypes(exclude=["object", "category"]).columns.tolist()
+
 
 def make_pipeline():
     feature_encoder = ColumnTransformer(
@@ -33,13 +46,17 @@ def make_pipeline():
         remainder="drop",
     )
     
-    # Base models for stacking (using best params from GridSearchCV)
-    rf = RandomForestRegressor(n_estimators=50, max_depth=10, random_state=42, n_jobs=-1)
-    xgb = XGBRegressor(n_estimators=50, max_depth=6, random_state=42, n_jobs=-1, objective='reg:squarederror')
-    cb = CatBoostRegressor(iterations=100, depth=6, random_state=42, verbose=0, thread_count=-1)
+    base_models = []
+    base_models.append(("rf", RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)))
+    
+    if XGB_AVAILABLE:
+        base_models.append(("xgb", XGBRegressor(n_estimators=100, random_state=42, n_jobs=-1)))
+    
+    if CATBOOST_AVAILABLE:
+        base_models.append(("cb", CatBoostRegressor(iterations=100, verbose=0, random_state=42, thread_count=-1)))
     
     stack_base = StackingRegressor(
-        estimators=[('rf', rf), ('xgb', xgb), ('cb', cb)],
+        estimators=base_models,
         final_estimator=Ridge()
     )
     
@@ -51,17 +68,17 @@ def make_pipeline():
         ("model", model)
     ])
 
+
 def train_model(data_path: str, model_save_path: str):
     print("Loading data...")
     df = pd.read_csv(data_path, index_col=0)
     
-    # Subsample for speed in academic context
     df = df.sample(min(10000, len(df)), random_state=42)
     
     y = df["price"].copy()
     X = df.drop(columns=["price"]).copy()
     
-    print("Building pipeline with Stacking (RF, XGB, CatBoost)...")
+    print("Building pipeline with Stacking...")
     pipe = make_pipeline()
     
     print("Training model...")
@@ -74,5 +91,6 @@ def train_model(data_path: str, model_save_path: str):
     mae = mean_absolute_error(y, train_preds)
     print(f"Training completed. Train MAE: {mae:.2f}")
 
+
 if __name__ == "__main__":
-    train_model("data/interim/train_filtered.csv", "models/final_model.pkl")
+    train_model("data/processed/train.csv", "models/final_model.pkl")
