@@ -7,8 +7,12 @@ from sklearn.compose import ColumnTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import TransformedTargetRegressor
-from catboost import CatBoostRegressor
 from sklearn.metrics import mean_absolute_error
+
+from sklearn.ensemble import RandomForestRegressor, StackingRegressor
+from catboost import CatBoostRegressor
+from xgboost import XGBRegressor
+from sklearn.linear_model import Ridge
 
 from src.features import CraigslistFeatureEngineer
 
@@ -22,15 +26,24 @@ def numeric_columns(X_df: pd.DataFrame) -> list[str]:
 def make_pipeline():
     feature_encoder = ColumnTransformer(
         transformers=[
-            ("description_tfidf", TfidfVectorizer(max_features=1000, ngram_range=(1, 2), min_df=5), "description"),
-            ("categorical_ohe", OneHotEncoder(handle_unknown="ignore"), categorical_without_description),
+            ("description_tfidf", TfidfVectorizer(max_features=500, ngram_range=(1, 1), min_df=10), "description"),
+            ("categorical_ohe", OneHotEncoder(handle_unknown="ignore", min_frequency=0.01), categorical_without_description),
             ("numeric", "passthrough", numeric_columns),
         ],
         remainder="drop",
     )
     
-    cb_base = CatBoostRegressor(random_state=42, verbose=0, iterations=100, depth=6)
-    model = TransformedTargetRegressor(regressor=cb_base, func=np.log1p, inverse_func=np.expm1)
+    # Base models for stacking (using best params from GridSearchCV)
+    rf = RandomForestRegressor(n_estimators=50, max_depth=10, random_state=42, n_jobs=-1)
+    xgb = XGBRegressor(n_estimators=50, max_depth=6, random_state=42, n_jobs=-1, objective='reg:squarederror')
+    cb = CatBoostRegressor(iterations=100, depth=6, random_state=42, verbose=0, thread_count=-1)
+    
+    stack_base = StackingRegressor(
+        estimators=[('rf', rf), ('xgb', xgb), ('cb', cb)],
+        final_estimator=Ridge()
+    )
+    
+    model = TransformedTargetRegressor(regressor=stack_base, func=np.log1p, inverse_func=np.expm1)
 
     return Pipeline(steps=[
         ("preprocess", CraigslistFeatureEngineer()), 
@@ -48,7 +61,7 @@ def train_model(data_path: str, model_save_path: str):
     y = df["price"].copy()
     X = df.drop(columns=["price"]).copy()
     
-    print("Building pipeline...")
+    print("Building pipeline with Stacking (RF, XGB, CatBoost)...")
     pipe = make_pipeline()
     
     print("Training model...")
