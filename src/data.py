@@ -123,6 +123,7 @@ class CraigslistPreprocessor(BaseEstimator, TransformerMixin):
 
         if "year" in df.columns:
             df["year"] = self.year_imputer_.transform(df[["year"]])[:, 0]
+            df["car_age"] = 2022 - df["year"]
 
         if "odometer" in df.columns:
             df["odometer"] = self.odometer_imputer_.transform(df[["odometer"]])[:, 0]

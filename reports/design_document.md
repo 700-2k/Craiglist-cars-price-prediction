@@ -1,4 +1,4 @@
-﻿# Design Document: Used Car Price Prediction
+# Design Document: Used Car Price Prediction
 
 ## 1. Goal and Metrics
 
@@ -703,6 +703,18 @@ LinearRegression:         MAE =  6192.721167 +/- 40.138301
 
 Planned models:
 
+```text
+DecisionTreeRegressor
+RandomForestRegressor
+CatBoostRegressor
+```
+
+Для всех моделей целевая переменная преобразуется через `log1p` (с использованием `TransformedTargetRegressor`), чтобы справиться со скошенностью распределения цен, а затем возвращается обратно (`expm1`) для расчета MAE в долларах. Для `GridSearchCV` выбрана метрика `neg_mean_absolute_error`.
+
+В рамках обучения (Training) применялся пайплайн `CraigslistPreprocessor` + `ColumnTransformer` (с `TfidfVectorizer` и `OneHotEncoder`). Оценка (Validation) проводилась с помощью 3-fold или 5-fold Cross-Validation на обучающей выборке.
+
+Model selection:
+По результатам валидации лучшей моделью оказался **CatBoostRegressor**. Он устойчиво показал наилучшее значение MAE (~5236) по сравнению с Decision Tree (~6840) и Random Forest (~5764). Анализ ошибок (Error Analysis) выявил, что модель сильнее всего ошибается на экстремально дорогих люксовых машинах и слишком старых авто, однако в основной массе предсказания достаточно точные. Главные признаки по важности (Feature Importance): возраст машины (`car_age`), пробег (`odometer`) и год выпуска (`year`).
 
 ---
 
@@ -716,4 +728,13 @@ Planned models:
 ---
 
 ### 5.11. Approach Summary
+
+```text
+В ходе проекта был проведен полноценный цикл ML-разработки:
+1. Очистка и фильтрация данных (удаление аномальных цен, старых машин, выбросов по пробегу).
+2. Разведочный анализ данных (EDA), выявление зависимостей признаков от таргета.
+3. Feature Engineering: создание car_age, log_odometer, кластеризация регионов и цветов, обработка TF-IDF текстовых описаний.
+4. Обучение моделей: настройка DecisionTree, RandomForest и CatBoost с применением TransformedTargetRegressor (log price).
+5. Анализ ошибок и Feature Importance, который подтвердил, что возраст, пробег и некоторые ключевые слова из описания играют главную роль в ценообразовании подержанных автомобилей.
+```
 
