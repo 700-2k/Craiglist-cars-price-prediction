@@ -2,77 +2,117 @@ import joblib
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from sklearn.pipeline import Pipeline
-from sklearn.compose import ColumnTransformer
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.compose import TransformedTargetRegressor
-from sklearn.metrics import mean_absolute_error
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, VotingRegressor
+from sklearn.model_selection import cross_val_score, RandomizedSearchCV, GridSearchCV
+from sklearn.base import clone
 
-from sklearn.ensemble import RandomForestRegressor, StackingRegressor
-from catboost import CatBoostRegressor
-from xgboost import XGBRegressor
-from sklearn.linear_model import Ridge
+try:
+    from xgboost import XGBRegressor
+    XGB_AVAILABLE = True
+except ImportError:
+    XGB_AVAILABLE = False
 
-from src.features import CraigslistFeatureEngineer
+try:
+    from catboost import CatBoostRegressor
+    CATBOOST_AVAILABLE = True
+except ImportError:
+    CATBOOST_AVAILABLE = False
 
-def categorical_without_description(X_df: pd.DataFrame) -> list[str]:
-    cat_cols = X_df.select_dtypes(include=["object", "category"]).columns.tolist()
-    return [col for col in cat_cols if col != "description"]
 
-def numeric_columns(X_df: pd.DataFrame) -> list[str]:
-    return X_df.select_dtypes(exclude=["object", "category"]).columns.tolist()
+def get_default_models():
+    models = {
+        "DecisionTree": DecisionTreeRegressor(random_state=42),
+        "RandomForest": RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1),
+        "GradientBoosting": GradientBoostingRegressor(n_estimators=100, random_state=42),
+    }
 
-def make_pipeline():
-    feature_encoder = ColumnTransformer(
-        transformers=[
-            ("description_tfidf", TfidfVectorizer(max_features=500, ngram_range=(1, 1), min_df=10), "description"),
-            ("categorical_ohe", OneHotEncoder(handle_unknown="ignore", min_frequency=0.01), categorical_without_description),
-            ("numeric", "passthrough", numeric_columns),
-        ],
-        remainder="drop",
+    if XGB_AVAILABLE:
+        models["XGBoost"] = XGBRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+
+    if CATBOOST_AVAILABLE:
+        models["CatBoost"] = CatBoostRegressor(iterations=100, verbose=0, random_state=42, thread_count=-1)
+
+    return models
+
+
+def train_model(model, X, y):
+    model.fit(X, y)
+    return model
+
+
+def run_cross_validation(model, X, y, cv=5):
+    scores = cross_val_score(
+        clone(model), X, y,
+        cv=cv, scoring="neg_mean_absolute_error", n_jobs=-1
     )
-    
-    # Base models for stacking (using best params from GridSearchCV)
-    rf = RandomForestRegressor(n_estimators=50, max_depth=10, random_state=42, n_jobs=-1)
-    xgb = XGBRegressor(n_estimators=50, max_depth=6, random_state=42, n_jobs=-1, objective='reg:squarederror')
-    cb = CatBoostRegressor(iterations=100, depth=6, random_state=42, verbose=0, thread_count=-1)
-    
-    stack_base = StackingRegressor(
-        estimators=[('rf', rf), ('xgb', xgb), ('cb', cb)],
-        final_estimator=Ridge()
+    mae_mean = -scores.mean()
+    mae_std = scores.std()
+    return mae_mean, mae_std
+
+
+def tune_random_search(model, param_dist, X, y, n_iter=20):
+    search = RandomizedSearchCV(
+        model, param_dist,
+        n_iter=n_iter, cv=5,
+        scoring="neg_mean_absolute_error",
+        n_jobs=-1, random_state=42
     )
-    
-    model = TransformedTargetRegressor(regressor=stack_base, func=np.log1p, inverse_func=np.expm1)
+    search.fit(X, y)
+    return search.best_estimator_, search.best_params_, -search.best_score_
 
-    return Pipeline(steps=[
-        ("preprocess", CraigslistFeatureEngineer()), 
-        ("encode", feature_encoder),
-        ("model", model)
-    ])
 
-def train_model(data_path: str, model_save_path: str):
-    print("Loading data...")
-    df = pd.read_csv(data_path, index_col=0)
-    
-    # Subsample for speed in academic context
-    df = df.sample(min(10000, len(df)), random_state=42)
-    
-    y = df["price"].copy()
-    X = df.drop(columns=["price"]).copy()
-    
-    print("Building pipeline with Stacking (RF, XGB, CatBoost)...")
-    pipe = make_pipeline()
-    
-    print("Training model...")
-    pipe.fit(X, y)
-    
-    print(f"Saving model to {model_save_path}...")
-    joblib.dump(pipe, model_save_path)
-    
-    train_preds = pipe.predict(X)
-    mae = mean_absolute_error(y, train_preds)
-    print(f"Training completed. Train MAE: {mae:.2f}")
+def tune_grid_search(model, param_grid, X, y):
+    grid_search = GridSearchCV(
+        model, param_grid,
+        cv=5, scoring="neg_mean_absolute_error",
+        n_jobs=-1
+    )
+    grid_search.fit(X, y)
+    return grid_search.best_estimator_, grid_search.best_params_, -grid_search.best_score_
 
-if __name__ == "__main__":
-    train_model("data/interim/train_filtered.csv", "models/final_model.pkl")
+
+def save_model(model, path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model, path)
+
+
+def load_model(path):
+    return joblib.load(path)
+
+
+def get_param_distributions():
+    return {
+        "RandomForest": {
+            "n_estimators": [100, 200, 300],
+            "max_depth": [None, 10, 20, 30],
+            "min_samples_split": [2, 5, 10],
+            "min_samples_leaf": [1, 2, 4],
+            "max_features": ["sqrt", "log2"],
+        },
+        "GradientBoosting": {
+            "n_estimators": [100, 200, 300, 500],
+            "max_depth": [3, 4, 5, 6, 7, 8],
+            "learning_rate": [0.01, 0.03, 0.05, 0.1, 0.2],
+            "subsample": [0.7, 0.8, 0.9, 1.0],
+        },
+        "XGBoost": {
+            "n_estimators": [100, 200, 300, 500],
+            "max_depth": [3, 4, 5, 6, 7, 8],
+            "learning_rate": [0.01, 0.03, 0.05, 0.1, 0.2],
+            "subsample": [0.7, 0.8, 0.9, 1.0],
+            "colsample_bytree": [0.7, 0.8, 0.9, 1.0],
+        },
+        "CatBoost": {
+            "iterations": [100, 200, 300],
+            "depth": [4, 6, 8, 10],
+            "learning_rate": [0.01, 0.03, 0.05, 0.1],
+            "l2_leaf_reg": [1, 3, 5],
+        },
+        "DecisionTree": {
+            "max_depth": [None, 10, 20, 30],
+            "min_samples_split": [2, 5, 10],
+            "min_samples_leaf": [1, 2, 4],
+        }
+    }
