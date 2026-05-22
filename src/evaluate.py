@@ -1,44 +1,69 @@
 import joblib
 import pandas as pd
+import numpy as np
 from pathlib import Path
-from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error
-import sys
-import os
-sys.path.insert(0, os.path.abspath('.'))
-
-from src.train import categorical_without_description, numeric_columns
-from src.features import CraigslistFeatureEngineer
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, mean_absolute_percentage_error
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
-def evaluate_model(model_path: str, test_data_path: str):
-    print("Loading test data...")
-    df = pd.read_csv(test_data_path, index_col=0)
-    
-    if "price" not in df.columns:
-        print("Error: Test data must contain 'price' column.")
+def evaluate(name, model, X, y_log_true):
+    y_pred_log = model.predict(X)
+    y_pred = np.expm1(y_pred_log)
+    y_true = np.expm1(y_log_true)
+
+    mae = mean_absolute_error(y_true, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+    r2 = r2_score(y_true, y_pred)
+    mape = mean_absolute_percentage_error(y_true, y_pred) * 100
+
+    return {
+        "Model": name,
+        "MAE": mae,
+        "RMSE": rmse,
+        "R2": r2,
+        "MAPE": mape
+    }
+
+
+def compare_models(results_list):
+    df = pd.DataFrame(results_list)
+    return df.sort_values("MAE").reset_index(drop=True)
+
+
+def plot_model_comparison(results_df, save_path):
+    plt.figure(figsize=(10, 6))
+    sns.barplot(data=results_df, x="MAE", y="Model", palette="viridis")
+    plt.title("Сравнение моделей по MAE")
+    plt.xlabel("MAE ($)")
+    plt.ylabel("")
+    plt.tight_layout()
+
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+
+
+def plot_tuning_comparison(before, after, save_path):
+    if len(before) == 0 or len(after) == 0:
         return
-        
-    df = df.dropna(subset=["price"])
-    df = df[(df["price"] >= 500) & (df["price"] <= 100000)]
-    df = df[df["year"] >= 1980]
-    
-    y = df["price"].copy()
-    X = df.drop(columns=["price"]).copy()
-    
-    print("Loading model...")
-    pipe = joblib.load(model_path)
-    
-    print("Evaluating...")
-    preds = pipe.predict(X)
-    
-    mae = mean_absolute_error(y, preds)
-    mape = mean_absolute_percentage_error(y, preds)
-    
-    print(f"Test MAE:  {mae:.2f} USD")
-    print(f"Test MAPE: {mape:.2%}")
-    
-    return mae, mape
 
+    fig, ax = plt.subplots(figsize=(10, 6))
+    x = np.arange(len(before))
+    width = 0.35
 
-if __name__ == "__main__":
-    evaluate_model("models/final_model.pkl", "data/processed/train.csv")
+    ax.bar(x - width/2, before, width, label="Default", color="#1f77b4")
+    ax.bar(x + width/2, after, width, label="Tuned", color="#2ca02c")
+
+    ax.set_ylabel("MAE ($)")
+    ax.set_title("Сравнение MAE до и после подбора гиперпараметров")
+    ax.set_xticks(x)
+    ax.set_xticklabels(list(before.keys()))
+    ax.legend()
+    plt.tight_layout()
+
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path, dpi=150)
+    plt.close()
