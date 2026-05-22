@@ -1,41 +1,10 @@
 ```
-# Python cache
-__pycache__/
-*.pyc
+# Data files
+data/processed/
 
-# Logs and temp files
-*.log
-*.tmp
+# Model files
+models/final_model.pkl
 
-# Environment
-.env
-.env.local
-.env.*
-
-# Editors
-.vscode/
-.idea/
-
-# Dependencies
-.venv/
-venv/
-node_modules/
-
-# Build artifacts
-dist/
-build/
-target/
-
-# Coverage reports
-coverage/
-htmlcov/
-.coverage
-
-# Testing
-.pytest_cache/
-.mypy_cache/
-
-# System files
-.DS_Store
-Thumbs.db
+# Reports and figures
+reports/figures/
 ```
