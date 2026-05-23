@@ -4,9 +4,6 @@ import joblib
 import pandas as pd
 sys.path.insert(0, os.path.abspath('.'))
 
-from src.train import categorical_without_description, numeric_columns
-from src.features import CraigslistFeatureEngineer
-
 # Simple CLI app to demonstrate prediction
 def main():
     print("=== Used Car Price Predictor ===")
