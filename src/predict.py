@@ -4,9 +4,6 @@ from pathlib import Path
 import sys, os
 sys.path.insert(0, os.path.abspath('.'))
 
-from src.train import categorical_without_description, numeric_columns
-from src.features import CraigslistFeatureEngineer
-
 def predict_single(model_path: str, input_data: dict) -> float:
     pipe = joblib.load(model_path)
     df_in = pd.DataFrame([input_data])

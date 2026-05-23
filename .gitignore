@@ -1,10 +1,4 @@
 ```
-# Data files
-data/processed/
-
-# Model files
-models/final_model.pkl
-
-# Reports and figures
-reports/figures/
+__pycache__/
+*.pyc
 ```
