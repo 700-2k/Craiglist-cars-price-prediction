@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -10,322 +10,262 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.utils.validation import check_is_fitted
 
 
-CURRENT_YEAR = None
-CYLINDERS_MAP = {
-    "3 cylinders": 3,
-    "4 cylinders": 4,
-    "5 cylinders": 5,
-    "6 cylinders": 6,
-    "8 cylinders": 8,
-    "10 cylinders": 10,
-    "12 cylinders": 12,
-    "other": 0
+CURRENT_YEAR = 2022
+SMOOTHING = 20
+
+CYLINDERS_MAP: Dict[str, int] = {
+    "3 cylinders": 3, "4 cylinders": 4, "5 cylinders": 5,
+    "6 cylinders": 6, "8 cylinders": 8, "10 cylinders": 10,
+    "12 cylinders": 12, "other": 0,
 }
 
-CATEGORICAL_COLS_TO_FILL = [
-    'condition', 'drive', 'transmission', 'fuel', 
-    'manufacturer', 'title_status', 'type', 'model'
+CAT_COLS: List[str] = [
+    "condition", "drive", "transmission", "fuel",
+    "manufacturer", "title_status", "type", "model",
 ]
 
-LOW_CARDINALITY_COLS = [
-    'condition', 'transmission', 'drive', 'fuel', 'title_status', 'type'
+LOW_CARD_COLS: List[str] = [
+    "condition", "transmission", "drive", "fuel", "title_status", "type",
 ]
 
-HIGH_CARDINALITY_COLS = ['manufacturer_grouped', 'model_grouped', 'region']
+HIGH_CARD_COLS: List[str] = ["manufacturer_grouped", "model_grouped", "region"]
 
-NUMERICAL_COLS_TO_SCALE = [
-    'car_age', 'log_odometer', 'cylinders_num',
-    'car_age_squared', 'log_odometer_squared',
-    'age_x_odometer', 'age_x_cylinders', 'odometer_x_cylinders',
-    'mileage_per_year', 'log_mileage_per_year',
-    'region_mean_price', 'region_median_price', 'region_price_std',
-    'manuf_mean_price', 'manuf_median_price', 'manuf_price_std',
-    'dist_to_region_center',
-    'manufacturer_target', 'model_target', 'region_target'
+NUMERICAL_COLS: List[str] = [
+    "car_age", "log_odometer", "cylinders_num", "cylinders_other_flag",
+    "car_age_squared", "log_odometer_squared",
+    "age_x_odometer", "age_x_cylinders", "odometer_x_cylinders",
+    "log_mileage_per_year",
+    "region_mean_price", "region_median_price", "region_price_std",
+    "manuf_mean_price", "manuf_median_price", "manuf_price_std",
+    "manufacturer_grouped_target", "model_grouped_target", "region_target",
 ]
 
-COLS_TO_DROP = [
-    'year', 'odometer', 'lat', 'long', 'region', 'manufacturer', 
-    'model', 'cylinders', 'manufacturer_grouped', 'model_grouped',
-    'lat_region_mean', 'long_region_mean', 'mileage_per_year'
+COLS_TO_DROP: List[str] = [
+    "year", "odometer", "lat", "long", "region", "manufacturer",
+    "model", "cylinders", "manufacturer_grouped", "model_grouped",
+    "mileage_per_year", "description", "state", "paint_color", "posting_date",
 ]
 
 
-def add_car_age(df: pd.DataFrame, current_year: Optional[int] = None) -> pd.DataFrame:
-    result = df.copy()
-    if current_year is None:
-        current_year = result['year'].max()
-    result['year'] = result['year'].fillna(result['year'].mode()[0])
-    result['car_age'] = current_year - result['year']
-    return result
+# ---------------------------------------------------------------------------
+# Stateless helpers
+# ---------------------------------------------------------------------------
 
-
-def log_transform_odometer(df: pd.DataFrame) -> pd.DataFrame:
-    result = df.copy()
-    result['log_odometer'] = np.log1p(result['odometer'])
-    return result
-
-
-def map_cylinders(df: pd.DataFrame) -> pd.DataFrame:
-    result = df.copy()
-    result['cylinders'] = result['cylinders'].fillna('other')
-    result['cylinders_num'] = result['cylinders'].map(CYLINDERS_MAP).fillna(0).astype(int)
-    result['cylinders_other_flag'] = (result['cylinders'] == 'other').astype(int)
-    return result
-
-
-def fill_missing_categoricals(df: pd.DataFrame, cols: Optional[List[str]] = None) -> pd.DataFrame:
-    result = df.copy()
-    if cols is None:
-        cols = CATEGORICAL_COLS_TO_FILL
-    for col in cols:
-        if col in result.columns:
-            result[col] = result[col].fillna('unknown')
-    return result
-
-
-def group_rare_categories(series: pd.Series, min_count: int = 20) -> Tuple[pd.Series, int]:
-    value_counts = series.value_counts()
-    rare_categories = value_counts[value_counts < min_count].index
-    result = series.copy()
-    result[series.isin(rare_categories)] = 'other'
-    return result, len(rare_categories)
-
-
-def target_encode(
-    X_train: pd.DataFrame, 
-    X_test: pd.DataFrame, 
-    column: str, 
-    y_train: pd.Series, 
-    smoothing: float = 10
-) -> Tuple[pd.Series, pd.Series, Dict[str, float]]:
-    global_mean = y_train.mean()
-    agg = X_train.join(y_train).groupby(column)[y_train.name].agg(['mean', 'count'])
-    agg['smoothed_mean'] = (
-        agg['mean'] * agg['count'] + smoothing * global_mean
-    ) / (agg['count'] + smoothing)
-    mapping = agg['smoothed_mean'].to_dict()
-    train_encoded = X_train[column].map(mapping).fillna(global_mean)
-    test_encoded = X_test[column].map(mapping).fillna(global_mean)
-    return train_encoded, test_encoded, mapping
-
-
-def add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
-    result = df.copy()
-    result['car_age_squared'] = result['car_age'] ** 2
-    result['log_odometer_squared'] = result['log_odometer'] ** 2
-    result['age_x_odometer'] = result['car_age'] * result['log_odometer']
-    result['age_x_cylinders'] = result['car_age'] * result['cylinders_num']
-    result['odometer_x_cylinders'] = result['log_odometer'] * result['cylinders_num']
-    result['mileage_per_year'] = result['odometer'] / (result['car_age'] + 1)
-    result['log_mileage_per_year'] = np.log1p(result['mileage_per_year'])
-    return result
-
-
-def add_region_features(
-    df: pd.DataFrame, 
-    region_stats: pd.DataFrame
+def basic_transforms(
+    X: pd.DataFrame,
+    year_mode: float,
+    odo_mean: float,
+    cylinders_map: Dict[str, int],
+    cat_cols: List[str],
 ) -> pd.DataFrame:
-    result = df.merge(
-        region_stats[['region', 'region_mean_price', 'region_median_price', 'region_price_std']], 
-        on='region', 
-        how='left'
-    )
-    result['region_mean_price'] = result['region_mean_price'].fillna(region_stats['region_mean_price'].mean())
-    result['region_median_price'] = result['region_median_price'].fillna(region_stats['region_median_price'].mean())
-    result['region_price_std'] = result['region_price_std'].fillna(region_stats['region_price_std'].mean())
-    return result
+    X = X.copy()
+    X["year"] = X["year"].fillna(year_mode)
+    X["car_age"] = CURRENT_YEAR - X["year"]
+    X["odometer"] = X["odometer"].fillna(odo_mean)
+    X["log_odometer"] = np.log1p(X["odometer"])
+    X["cylinders"] = X["cylinders"].fillna("other")
+    X["cylinders_num"] = X["cylinders"].map(cylinders_map).fillna(0).astype(np.int8)
+    X["cylinders_other_flag"] = (X["cylinders"] == "other").astype(np.int8)
+    for col in cat_cols:
+        if col in X.columns:
+            X[col] = X[col].fillna("unknown")
+    return X
 
 
-def add_manufacturer_features(
-    df: pd.DataFrame, 
-    manuf_stats: pd.DataFrame
-) -> pd.DataFrame:
-    result = df.merge(
-        manuf_stats[['manufacturer', 'manuf_mean_price', 'manuf_median_price', 'manuf_price_std']], 
-        on='manufacturer', 
-        how='left'
-    )
-    global_manuf_mean = manuf_stats['manuf_mean_price'].mean()
-    global_manuf_median = manuf_stats['manuf_median_price'].mean()
-    global_manuf_std = manuf_stats['manuf_price_std'].mean()
-    result['manuf_mean_price'] = result['manuf_mean_price'].fillna(global_manuf_mean)
-    result['manuf_median_price'] = result['manuf_median_price'].fillna(global_manuf_median)
-    result['manuf_price_std'] = result['manuf_price_std'].fillna(global_manuf_std)
-    return result
+def add_interactions(df: pd.DataFrame) -> pd.DataFrame:
+    df["car_age_squared"] = (df["car_age"] ** 2).astype(np.float32)
+    df["log_odometer_squared"] = (df["log_odometer"] ** 2).astype(np.float32)
+    df["age_x_odometer"] = (df["car_age"] * df["log_odometer"]).astype(np.float32)
+    df["age_x_cylinders"] = (df["car_age"] * df["cylinders_num"]).astype(np.float32)
+    df["odometer_x_cylinders"] = (df["log_odometer"] * df["cylinders_num"]).astype(np.float32)
+    df["mileage_per_year"] = (df["odometer"] / (df["car_age"] + 1)).astype(np.float32)
+    df["log_mileage_per_year"] = np.log1p(df["mileage_per_year"]).astype(np.float32)
+    return df
 
+
+# ---------------------------------------------------------------------------
+# Sklearn-compatible pipeline
+# ---------------------------------------------------------------------------
 
 class FeatureEngineerPipeline(BaseEstimator, TransformerMixin):
-    def __init__(self):
-        self.scaler = None
-        self.selector = None
-        self.target_encoders = {}
-        self.region_stats = None
-        self.manuf_stats = None
-        self.current_year = None
-        self.selected_features = None
-        
+    """
+    Feature engineering pipeline that mirrors the notebook logic exactly.
+
+    fit() — learns all statistics from X_train / y_train only (no leakage).
+    transform() — applies fitted transforms to any split.
+    """
+
+    def __init__(self) -> None:
+        self.year_mode_: Optional[float] = None
+        self.odo_mean_: Optional[float] = None
+        self.rare_models_: Optional[set] = None
+        self.rare_manufacturers_: Optional[set] = None
+        self.group_manufacturer_: bool = False
+        self.train_ohe_cols_: Optional[List[str]] = None
+        self.global_mean_log_: Optional[float] = None
+        self.target_encoders_: Dict[str, Dict] = {}
+        self.region_stats_: Optional[pd.DataFrame] = None
+        self.manuf_stats_: Optional[pd.DataFrame] = None
+        self.global_region_: Optional[pd.Series] = None
+        self.global_manuf_: Optional[pd.Series] = None
+        self.scaler_: Optional[StandardScaler] = None
+        self.selector_: Optional[SelectKBest] = None
+        self.selected_features_: Optional[List[str]] = None
+        self.cols_to_scale_: Optional[List[str]] = None
+
+    # ------------------------------------------------------------------
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "FeatureEngineerPipeline":
-        df = X.copy()
-        self.current_year = df['year'].max()
-        
-        df = add_car_age(df, self.current_year)
-        df = log_transform_odometer(df)
-        df = map_cylinders(df)
-        df = fill_missing_categoricals(df)
-        
-        X_train, X_temp, y_train, y_temp = self._split_data(df, y)
-        
-        X_train['model_grouped'], _ = group_rare_categories(X_train['model'], min_count=20)
-        X_temp['model_grouped'], _ = group_rare_categories(X_temp['model'], min_count=20)
-        
-        if X_train['manufacturer'].nunique() > 50:
-            X_train['manufacturer_grouped'], _ = group_rare_categories(X_train['manufacturer'], min_count=100)
-            X_temp['manufacturer_grouped'], _ = group_rare_categories(X_temp['manufacturer'], min_count=100)
-        else:
-            X_train['manufacturer_grouped'] = X_train['manufacturer']
-            X_temp['manufacturer_grouped'] = X_temp['manufacturer']
-        
-        X_train_ohe = pd.get_dummies(X_train, columns=LOW_CARDINALITY_COLS, prefix=LOW_CARDINALITY_COLS, drop_first=False, dtype=int)
-        X_temp_ohe = pd.get_dummies(X_temp, columns=LOW_CARDINALITY_COLS, prefix=LOW_CARDINALITY_COLS, drop_first=False, dtype=int)
-        X_temp_ohe = X_temp_ohe.reindex(columns=X_train_ohe.columns, fill_value=0)
-        
-        train_with_price = X_train_ohe.join(y_train)
-        self.region_stats = train_with_price.groupby('region')['price'].agg(['mean', 'median', 'std', 'count']).reset_index()
-        self.region_stats.columns = ['region', 'region_mean_price', 'region_median_price', 'region_price_std', 'region_count']
-        
-        self.manuf_stats = train_with_price.groupby('manufacturer')['price'].agg(['mean', 'median', 'std', 'count']).reset_index()
-        self.manuf_stats.columns = ['manufacturer', 'manuf_mean_price', 'manuf_median_price', 'manuf_price_std', 'manuf_count']
-        
-        for col in HIGH_CARDINALITY_COLS:
-            if col in X_train_ohe.columns:
-                train_enc, _, mapping = target_encode(X_train_ohe, X_temp_ohe, col, y_train, smoothing=20)
-                X_train_ohe[f'{col}_target'] = train_enc
-                self.target_encoders[col] = mapping
-        
-        X_train_fe = add_region_features(X_train_ohe, self.region_stats)
-        X_train_fe = add_manufacturer_features(X_train_fe, self.manuf_stats)
-        
-        region_coords = train_with_price.groupby('region')[['lat', 'long']].mean().reset_index()
-        X_train_fe = X_train_fe.merge(region_coords, on='region', how='left', suffixes=('', '_region_mean'))
-        global_lat = region_coords['lat'].mean()
-        global_long = region_coords['long'].mean()
-        X_train_fe['lat_region_mean'] = X_train_fe['lat_region_mean'].fillna(global_lat)
-        X_train_fe['long_region_mean'] = X_train_fe['long_region_mean'].fillna(global_long)
-        X_train_fe['dist_to_region_center'] = np.sqrt(
-            (X_train_fe['lat'] - X_train_fe['lat_region_mean'])**2 + 
-            (X_train_fe['long'] - X_train_fe['long_region_mean'])**2
-        )
-        
-        X_train_fe = add_interaction_features(X_train_fe)
-        
-        cols_to_scale = [col for col in NUMERICAL_COLS_TO_SCALE if col in X_train_fe.columns]
-        self.scaler = StandardScaler()
-        X_train_scaled = X_train_fe.copy()
-        X_train_scaled.loc[:, cols_to_scale] = self.scaler.fit_transform(X_train_fe[cols_to_scale])
-        
-        X_train_final = X_train_scaled.drop(columns=[col for col in COLS_TO_DROP if col in X_train_scaled.columns])
-        
-        k = min(50, X_train_final.shape[1])
-        self.selector = SelectKBest(score_func=f_regression, k=k)
-        self.selector.fit(X_train_final, y_train)
-        selected_mask = self.selector.get_support()
-        self.selected_features = X_train_final.columns[selected_mask].tolist()
-        
-        return self
-    
-    def transform(self, X: pd.DataFrame, y: Optional[pd.Series] = None) -> pd.DataFrame:
-        check_is_fitted(self, ['scaler', 'selector', 'selected_features', 'current_year'])
-        
-        df = X.copy()
-        df = add_car_age(df, self.current_year)
-        df = log_transform_odometer(df)
-        df = map_cylinders(df)
-        df = fill_missing_categoricals(df)
-        
-        df['model_grouped'], _ = group_rare_categories(df['model'], min_count=20)
-        
-        if df['manufacturer'].nunique() > 50:
-            df['manufacturer_grouped'], _ = group_rare_categories(df['manufacturer'], min_count=100)
-        else:
-            df['manufacturer_grouped'] = df['manufacturer']
-        
-        df_ohe = pd.get_dummies(df, columns=LOW_CARDINALITY_COLS, prefix=LOW_CARDINALITY_COLS, drop_first=False, dtype=int)
-        
-        for col in HIGH_CARDINALITY_COLS:
-            if col in df_ohe.columns and col in self.target_encoders:
-                mapping = self.target_encoders[col]
-                global_mean = y.mean() if y is not None else 0
-                df_ohe[f'{col}_target'] = df_ohe[col].map(mapping).fillna(global_mean)
-        
-        if self.region_stats is not None:
-            df_fe = add_region_features(df_ohe, self.region_stats)
-        else:
-            df_fe = df_ohe
-            
-        if self.manuf_stats is not None:
-            df_fe = add_manufacturer_features(df_fe, self.manuf_stats)
-        
-        if self.region_stats is not None:
-            region_coords = X.groupby('region')[['lat', 'long']].mean().reset_index()
-            df_fe = df_fe.merge(region_coords, on='region', how='left', suffixes=('', '_region_mean'))
-            global_lat = region_coords['lat'].mean()
-            global_long = region_coords['long'].mean()
-            df_fe['lat_region_mean'] = df_fe['lat_region_mean'].fillna(global_lat)
-            df_fe['long_region_mean'] = df_fe['long_region_mean'].fillna(global_long)
-            df_fe['dist_to_region_center'] = np.sqrt(
-                (df_fe['lat'] - df_fe['lat_region_mean'])**2 + 
-                (df_fe['long'] - df_fe['long_region_mean'])**2
+        y_log = np.log1p(y)
+
+        # 1. Basic numeric/categorical transforms
+        self.year_mode_ = float(X["year"].mode()[0])
+        self.odo_mean_ = float(X["odometer"].mean())
+        Xtr = basic_transforms(X, self.year_mode_, self.odo_mean_, CYLINDERS_MAP, CAT_COLS)
+
+        # 2. Group rare categories (learn from train)
+        model_counts = Xtr["model"].value_counts()
+        self.rare_models_ = set(model_counts[model_counts < 20].index)
+        Xtr["model_grouped"] = Xtr["model"].where(~Xtr["model"].isin(self.rare_models_), "other")
+
+        self.group_manufacturer_ = Xtr["manufacturer"].nunique() > 50
+        if self.group_manufacturer_:
+            manuf_counts = Xtr["manufacturer"].value_counts()
+            self.rare_manufacturers_ = set(manuf_counts[manuf_counts < 100].index)
+            Xtr["manufacturer_grouped"] = Xtr["manufacturer"].where(
+                ~Xtr["manufacturer"].isin(self.rare_manufacturers_), "other"
             )
-        
-        df_fe = add_interaction_features(df_fe)
-        
-        cols_to_scale = [col for col in NUMERICAL_COLS_TO_SCALE if col in df_fe.columns]
-        df_scaled = df_fe.copy()
-        df_scaled.loc[:, cols_to_scale] = self.scaler.transform(df_fe[cols_to_scale])
-        
-        df_final = df_scaled.drop(columns=[col for col in COLS_TO_DROP if col in df_scaled.columns])
-        
-        X_selected = df_final[self.selected_features]
-        
-        return X_selected
-    
-    def _split_data(self, df: pd.DataFrame, y: pd.Series, test_size: float = 0.2, random_state: int = 42):
-        from sklearn.model_selection import train_test_split
-        X_train, X_temp, y_train, y_temp = train_test_split(df, y, test_size=test_size, random_state=random_state)
-        return X_train, X_temp, y_train, y_temp
+        else:
+            self.rare_manufacturers_ = set()
+            Xtr["manufacturer_grouped"] = Xtr["manufacturer"]
 
+        # 3. One-Hot Encoding — store column list
+        Xtr_ohe = pd.get_dummies(Xtr, columns=LOW_CARD_COLS,
+                                 prefix=LOW_CARD_COLS, drop_first=False, dtype=np.int8)
+        self.train_ohe_cols_ = Xtr_ohe.columns.tolist()
 
-def build_features(
-    df: pd.DataFrame, 
-    y: Optional[pd.Series] = None, 
-    fit: bool = True, 
-    artifacts: Optional[Dict[str, Any]] = None
-) -> Tuple[pd.DataFrame, Optional[Dict[str, Any]]]:
-    if fit:
-        pipeline = FeatureEngineerPipeline()
-        pipeline.fit(df, y)
-        X_transformed = pipeline.transform(df, y)
-        artifacts = {
-            'scaler': pipeline.scaler,
-            'selector': pipeline.selector,
-            'target_encoders': pipeline.target_encoders,
-            'region_stats': pipeline.region_stats,
-            'manuf_stats': pipeline.manuf_stats,
-            'current_year': pipeline.current_year,
-            'selected_features': pipeline.selected_features
-        }
-        return X_transformed, artifacts
-    else:
-        if artifacts is None:
-            raise ValueError("artifacts must be provided when fit=False")
-        pipeline = FeatureEngineerPipeline()
-        pipeline.scaler = artifacts['scaler']
-        pipeline.selector = artifacts['selector']
-        pipeline.target_encoders = artifacts['target_encoders']
-        pipeline.region_stats = artifacts['region_stats']
-        pipeline.manuf_stats = artifacts['manuf_stats']
-        pipeline.current_year = artifacts['current_year']
-        pipeline.selected_features = artifacts['selected_features']
-        X_transformed = pipeline.transform(df, y)
-        return X_transformed, artifacts
+        # 4. Target Encoding (fit on train only)
+        self.global_mean_log_ = float(y_log.mean())
+        for col in HIGH_CARD_COLS:
+            if col not in Xtr_ohe.columns:
+                continue
+            temp = pd.Series(y_log.values, index=Xtr_ohe.index, name="target")
+            cats = Xtr_ohe[col]
+            stats = pd.concat([cats, temp], axis=1).groupby(col)["target"].agg(["mean", "count"])
+            stats["smoothed"] = (
+                stats["mean"] * stats["count"] + SMOOTHING * self.global_mean_log_
+            ) / (stats["count"] + SMOOTHING)
+            self.target_encoders_[col] = stats["smoothed"].to_dict()
+            Xtr_ohe[f"{col}_target"] = (
+                Xtr_ohe[col].map(self.target_encoders_[col])
+                .fillna(self.global_mean_log_).astype(np.float32)
+            )
+
+        # 5. Region / manufacturer statistics
+        self.region_stats_ = (
+            Xtr_ohe[["region"]].join(y.rename("price"))
+            .groupby("region")["price"].agg(["mean", "median", "std"])
+            .rename(columns={"mean": "region_mean_price",
+                             "median": "region_median_price",
+                             "std": "region_price_std"})
+        )
+        self.global_region_ = self.region_stats_.mean()
+        Xtr_ohe = Xtr_ohe.join(self.region_stats_, on="region")
+        for col in ["region_mean_price", "region_median_price", "region_price_std"]:
+            Xtr_ohe[col] = Xtr_ohe[col].fillna(self.global_region_[col]).astype(np.float32)
+
+        self.manuf_stats_ = (
+            Xtr_ohe[["manufacturer"]].join(y.rename("price"))
+            .groupby("manufacturer")["price"].agg(["mean", "median", "std"])
+            .rename(columns={"mean": "manuf_mean_price",
+                             "median": "manuf_median_price",
+                             "std": "manuf_price_std"})
+        )
+        self.global_manuf_ = self.manuf_stats_.mean()
+        Xtr_ohe = Xtr_ohe.join(self.manuf_stats_, on="manufacturer")
+        for col in ["manuf_mean_price", "manuf_median_price", "manuf_price_std"]:
+            Xtr_ohe[col] = Xtr_ohe[col].fillna(self.global_manuf_[col]).astype(np.float32)
+
+        # 6. Interaction features
+        Xtr_ohe = add_interactions(Xtr_ohe)
+
+        # 7. Drop raw columns
+        Xtr_fe = Xtr_ohe.drop(columns=[c for c in COLS_TO_DROP if c in Xtr_ohe.columns])
+
+        # 8. Scale numerical columns
+        self.cols_to_scale_ = [c for c in NUMERICAL_COLS if c in Xtr_fe.columns]
+        self.scaler_ = StandardScaler()
+        self.scaler_.fit(Xtr_fe[self.cols_to_scale_].values.astype(np.float64))
+        Xtr_fe[self.cols_to_scale_] = self.scaler_.transform(
+            Xtr_fe[self.cols_to_scale_].values.astype(np.float64)
+        ).astype(np.float32)
+
+        # 9. Feature selection
+        Xtr_clean = Xtr_fe.fillna(0)
+        K = min(50, Xtr_clean.shape[1])
+        self.selector_ = SelectKBest(score_func=f_regression, k=K)
+        self.selector_.fit(Xtr_clean.values.astype(np.float32), y_log.values)
+        mask = self.selector_.get_support()
+        self.selected_features_ = Xtr_clean.columns[mask].tolist()
+
+        return self
+
+    # ------------------------------------------------------------------
+    def transform(self, X: pd.DataFrame, y: Optional[pd.Series] = None) -> pd.DataFrame:
+        check_is_fitted(self, ["scaler_", "selector_", "selected_features_"])
+
+        Xte = basic_transforms(X, self.year_mode_, self.odo_mean_, CYLINDERS_MAP, CAT_COLS)
+
+        # Rare grouping (apply train mappings)
+        Xte["model_grouped"] = Xte["model"].where(~Xte["model"].isin(self.rare_models_), "other")
+        if self.group_manufacturer_:
+            Xte["manufacturer_grouped"] = Xte["manufacturer"].where(
+                ~Xte["manufacturer"].isin(self.rare_manufacturers_), "other"
+            )
+        else:
+            Xte["manufacturer_grouped"] = Xte["manufacturer"]
+
+        # OHE — reindex to train columns
+        Xte_ohe = pd.get_dummies(Xte, columns=LOW_CARD_COLS,
+                                 prefix=LOW_CARD_COLS, drop_first=False, dtype=np.int8)
+        Xte_ohe = Xte_ohe.reindex(columns=self.train_ohe_cols_, fill_value=0)
+
+        # Target encoding
+        for col in HIGH_CARD_COLS:
+            if col not in Xte_ohe.columns or col not in self.target_encoders_:
+                continue
+            Xte_ohe[f"{col}_target"] = (
+                Xte_ohe[col].map(self.target_encoders_[col])
+                .fillna(self.global_mean_log_).astype(np.float32)
+            )
+
+        # Region / manufacturer statistics
+        Xte_ohe = Xte_ohe.join(self.region_stats_, on="region")
+        for col in ["region_mean_price", "region_median_price", "region_price_std"]:
+            Xte_ohe[col] = Xte_ohe[col].fillna(self.global_region_[col]).astype(np.float32)
+
+        Xte_ohe = Xte_ohe.join(self.manuf_stats_, on="manufacturer")
+        for col in ["manuf_mean_price", "manuf_median_price", "manuf_price_std"]:
+            Xte_ohe[col] = Xte_ohe[col].fillna(self.global_manuf_[col]).astype(np.float32)
+
+        # Interactions
+        Xte_ohe = add_interactions(Xte_ohe)
+
+        # Drop raw columns
+        Xte_fe = Xte_ohe.drop(columns=[c for c in COLS_TO_DROP if c in Xte_ohe.columns])
+        Xte_fe = Xte_fe.reindex(columns=Xte_fe.columns.intersection(
+            pd.Index(self.cols_to_scale_).union(Xte_fe.columns)
+        ), fill_value=0)
+
+        # Scale
+        cols_present = [c for c in self.cols_to_scale_ if c in Xte_fe.columns]
+        Xte_fe[cols_present] = self.scaler_.transform(
+            Xte_fe[cols_present].values.astype(np.float64)
+        ).astype(np.float32)
+
+        # Feature selection
+        Xte_clean = Xte_fe.fillna(0)
+        Xte_clean = Xte_clean.reindex(
+            columns=pd.Index(self.selected_features_), fill_value=0
+        )
+
+        return Xte_clean

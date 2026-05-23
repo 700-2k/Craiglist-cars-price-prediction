@@ -1,4 +1,33 @@
-```
+# Python
 __pycache__/
 *.pyc
-```
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data — all splits are large (raw: 1.4 GB, interim: ~1.2 GB, processed: ~300 MB)
+data/raw/
+data/interim/
+data/processed/
+
+# CatBoost training logs
+catboost_info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
